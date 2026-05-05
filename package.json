@@ -1,0 +1,27 @@
+{
+  "name": "tiny-handoff",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "tiny.gateway": "node scripts/telegram-poll.mjs",
+    "telegram:poll": "node scripts/telegram-poll.mjs",
+    "build": "next build",
+    "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "autoprefixer": "latest",
+    "lucide-react": "^1.14.0",
+    "next": "latest",
+    "openai": "^6.35.0",
+    "postcss": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "tailwindcss": "^3.4.17",
+    "typescript": "latest"
+  }
+}

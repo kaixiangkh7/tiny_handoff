@@ -1,0 +1,10 @@
+node_modules
+.next
+.data
+.env*.local
+dev-server.log
+dev-server.err.log
+telegram-gateway.log
+telegram-gateway.err.log
+tsconfig.tsbuildinfo
+car_hunt/
