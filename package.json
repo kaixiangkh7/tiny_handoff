@@ -7,6 +7,7 @@
     "tiny.gateway": "node scripts/telegram-poll.mjs",
     "telegram:poll": "node scripts/telegram-poll.mjs",
     "build": "next build",
+    "start": "next start",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
