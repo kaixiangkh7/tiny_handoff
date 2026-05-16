@@ -8,3 +8,4 @@ telegram-gateway.log
 telegram-gateway.err.log
 tsconfig.tsbuildinfo
 car_hunt/
+.claude/

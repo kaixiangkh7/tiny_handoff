@@ -7,6 +7,7 @@ const keys = {
   supplies: "tiny-handoff:supplies",
   memories: "tiny-handoff:memories",
 };
+const previousDemoPhotoUrl = "https://images.pexels.com/photos/13247629/pexels-photo-13247629.jpeg?auto=compress&cs=tinysrgb&w=400";
 
 const isBrowser = () => typeof window !== "undefined";
 
@@ -28,7 +29,11 @@ function write<T>(key: string, value: T) {
   if (isBrowser()) window.localStorage.setItem(key, JSON.stringify(value));
 }
 
-export const getChildProfile = () => read<ChildProfile>(keys.profile, seedProfile);
+export const getChildProfile = () => {
+  const profile = read<ChildProfile>(keys.profile, seedProfile);
+  const photoUrl = !profile.photoUrl || profile.photoUrl === previousDemoPhotoUrl ? seedProfile.photoUrl : profile.photoUrl;
+  return { ...seedProfile, ...profile, photoUrl };
+};
 export const saveChildProfile = (profile: ChildProfile) => write(keys.profile, profile);
 export const getEvents = () => read<CareEvent[]>(keys.events, seedEvents);
 export const setEvents = (events: CareEvent[]) => write(keys.events, events);

@@ -28,6 +28,7 @@ export type MemoryType =
 export interface ChildProfile {
   id: string;
   name: string;
+  photoUrl?: string;
   birthDate?: string;
   ageMonths: number;
   daycareDays: string[];

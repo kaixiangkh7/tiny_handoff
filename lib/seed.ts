@@ -11,6 +11,7 @@ const todayAt = (time: string, offsetDays = 0) => {
 export const seedProfile: ChildProfile = {
   id: "emma",
   name: "Emma",
+  photoUrl: "https://images.unsplash.com/photo-1694605735529-8d60f23a30b6?auto=format&fit=crop&fm=jpg&q=80&w=500&h=500",
   ageMonths: 16,
   daycareDays: ["Mon", "Tue", "Wed", "Thu", "Fri"],
   usualWakeTime: "06:30",

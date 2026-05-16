@@ -14,8 +14,10 @@ const agentSchema = {
     type: "object",
     additionalProperties: false,
     properties: {
-      mode: { type: "string", enum: ["log", "ask", "clarify"] },
+      mode: { type: "string", enum: ["log", "ask", "clarify", "care_moment"] },
       message: { type: "string" },
+      safetyLevel: { type: "string", enum: ["normal", "watch", "call_pediatrician", "urgent"] },
+      nextSteps: { type: "array", items: { type: "string" } },
       events: {
         type: "array",
         items: {
@@ -38,28 +40,49 @@ const agentSchema = {
       },
       askQuestion: { type: "string" },
     },
-    required: ["mode", "message", "events", "askQuestion"],
+    required: ["mode", "message", "safetyLevel", "nextSteps", "events", "askQuestion"],
   },
 };
 
 function localAgent(text: string, childId: string) {
   const lower = text.toLowerCase().trim();
   const soundsLikeQuestion = lower.includes("?") || /^(what|when|should|can|could|why|how|any|is|do|does)\b/.test(lower);
+  const hasCareDetails = /\b(cry|cried|diaper|poop|stool|bm|wet|yellow|rash|fever|vomit|blood|milk|water|nap|meal|medicine|changed)\b/.test(lower);
+  const serious = /\b(blood|breathing|blue|dehydrat|letharg|limp|repeated vomit|fever|severe pain)\b/.test(lower);
   const vagueLog = /^(milk|water|poop|nap|meal|medicine|mood|bedtime)$/i.test(lower);
   if (vagueLog) {
     return {
       mode: "clarify",
-      message: `I can save that. What should I remember about ${text}? A rough amount, time, or quick detail is enough.`,
+      message: `Ok, what should I know about ${text}? A rough amount, time, or quick detail is enough.`,
+      safetyLevel: "normal",
+      nextSteps: [],
       events: [],
       askQuestion: "",
     };
   }
+  if (soundsLikeQuestion && hasCareDetails) {
+    const events = parseNaturalCareEntry(text, childId);
+    return {
+      mode: "care_moment",
+      message: serious
+        ? "Ok, I see. Because you mentioned a potentially concerning symptom, contact your pediatrician or urgent care depending on severity. If Emma has trouble breathing, seems dehydrated, unusually lethargic, or symptoms feel severe, seek urgent care now."
+        : "Ok, I see. Poor Emma. Wet yellow poop can happen, but focus on comfort first: check diaper fit and rash, soothe her, offer fluids if appropriate, and watch whether she settles. If there is blood, fever, repeated vomiting, dehydration signs, severe pain, or she seems unusually lethargic, contact your pediatrician or urgent care.",
+      safetyLevel: serious ? "urgent" : "watch",
+      nextSteps: serious
+        ? ["Contact a medical professional based on severity.", "Keep notes on timing, stool, crying, temperature, and fluids."]
+        : ["Check diaper fit and skin for rash.", "Comfort her and watch if she settles.", "Track fever, blood, vomiting, dehydration, or worsening pain."],
+      events,
+      askQuestion: "",
+    };
+  }
   if (soundsLikeQuestion) {
-    return { mode: "ask", message: "Let me check Emma's care memory.", events: [], askQuestion: text };
+    return { mode: "ask", message: "Let me check Emma's care memory.", safetyLevel: "normal", nextSteps: [], events: [], askQuestion: text };
   }
   return {
     mode: "log",
-    message: "Got it. I sorted that into Emma's care memory.",
+    message: "",
+    safetyLevel: "normal",
+    nextSteps: [],
     events: parseNaturalCareEntry(text, childId),
     askQuestion: "",
   };
@@ -95,7 +118,7 @@ export async function POST(request: NextRequest) {
         {
           role: "system",
           content:
-            "You are Tiny, a warm care-memory friend for busy parents. Parents do not need perfect logging. They may send one messy text or voice note with many things at once, like they are texting a friend. Your job is to sort it quietly into Emma's care memory. Decide whether the parent is giving care information to remember, asking a question, or saying something too ambiguous to act on. If logging, extract every clear care detail into structured CareEvent objects, and save partial information when safe rather than blocking. Ask a clarification only when the missing detail is important for safety, meaning, or action. If asking, set mode ask and put the cleaned question in askQuestion. Reply conversationally, concise, and reassuring. Avoid making the parent feel behind. Do not diagnose medical issues. Preserve details in notes. Use ISO timestamps; if no time is provided for a log, use nowIso.",
+            "You are a structured childcare note extractor. This is an internal backend step, not the parent-facing chat. Classify the current inbound.messageText as log, ask, clarify, or care_moment. Use conversationContext only to resolve follow-ups and pronouns. Extract CareEvent objects only from inbound.messageText, never from todayEvents, recentEvents, memories, ruleAnswer, conversationContext, or any other context. If the current message has care facts plus a question or concern, set mode care_moment and extract clear events. If it is only care facts, set mode log and extract events. If it is only a question, set mode ask, put the cleaned context-aware question in askQuestion, and return an empty events array. Ask clarification only when missing detail is important for safety or meaning. Do not diagnose. Use safetyLevel only for routing. Preserve color, texture, crying, and caregiver details in notes. Use ISO timestamps; if no time is provided, use nowIso. Keep message empty unless mode is clarify.",
         },
         { role: "user", content: JSON.stringify({ ...payload, inbound }) },
       ],

@@ -78,7 +78,7 @@ export function suggestBedtimeWindow(events: CareEvent[], profile: ChildProfile,
   if (!napEnd) {
     return {
       window: profile.usualBedtime,
-      reason: "No nap end is logged today, so this uses the usual bedtime from Emma's profile.",
+      reason: "Tiny has not heard when nap ended today, so this uses the usual bedtime from Emma's profile.",
       confidence: "low",
     };
   }
@@ -111,8 +111,8 @@ export function generateDashboardContext(profile: ChildProfile, events: CareEven
   const poop = getLastEventByType(today, "poop");
   const bedtime = suggestBedtimeWindow(events, profile, memories);
   const unpacked = supplies.filter((item) => item.needed && !item.packed);
-  const poopText = poop ? `Poop logged at ${formatTime(poop.timestamp)}.` : "No poop logged today, so offer water and keep an eye on it.";
-  return `${profile.name} is mostly on track today. Nap ended ${napEnd ? `at ${formatTime(napEnd.timestamp)}` : "not yet logged"}. Suggested bedtime: ${bedtime.window}. ${poopText}${unpacked.length ? ` Pack ${unpacked.map((item) => item.name.toLowerCase()).join(", ")} tomorrow.` : ""}`;
+  const poopText = poop ? `Poop was around ${formatTime(poop.timestamp)}.` : "Tiny has not heard about poop today, so offer water and keep an eye on it.";
+  return `${profile.name} is mostly on track today. Nap ended ${napEnd ? `at ${formatTime(napEnd.timestamp)}` : "not heard yet"}. Suggested bedtime: ${bedtime.window}. ${poopText}${unpacked.length ? ` Pack ${unpacked.map((item) => item.name.toLowerCase()).join(", ")} tomorrow.` : ""}`;
 }
 
 export function generateHandoffSummary(
@@ -136,7 +136,7 @@ export function generateHandoffSummary(
     return `Hi! ${profile.name} ${poopConcern ? "has had some hard poop recently, so could you please offer extra water and note any discomfort?" : "is doing well today."} ${meal ? `Last meal note: ${meal.note ?? meal.status}.` : ""} ${totals.water ? `Water today: ${totals.water} oz.` : ""} Thank you!`;
   }
 
-  const base = `${profile.name} woke ${wake ? `around ${formatTime(wake.timestamp)}` : "with no wake time logged"}, napped ${napStart && napEnd ? `from ${formatTime(napStart.timestamp)}-${formatTime(napEnd.timestamp)}` : "with nap details incomplete"}, drank ${totals.milk} oz milk${totals.water ? ` and ${totals.water} oz water` : ""}, and ${poop ? `had a ${poop.status ?? ""} poop` : "had no poop logged today"}.`;
+  const base = `${profile.name} woke ${wake ? `around ${formatTime(wake.timestamp)}` : "with no wake time shared"}, napped ${napStart && napEnd ? `from ${formatTime(napStart.timestamp)}-${formatTime(napEnd.timestamp)}` : "with nap details incomplete"}, drank ${totals.milk} oz milk${totals.water ? ` and ${totals.water} oz water` : ""}, and ${poop ? `had a ${poop.status ?? ""} poop` : "has no poop note today"}.`;
   const ending = ` ${mood ? `Mood: ${mood.mood ?? mood.status}. ` : ""}I'd aim for bedtime around ${bedtime.window}.`;
   return recipient === "spouse" ? base + ending : `${base} Please offer water, watch tired signs, and use bedtime around ${bedtime.window}.`;
 }
@@ -146,6 +146,22 @@ export function generateDaycarePrep(profile: ChildProfile, supplies: SupplyItem[
   const supplyNotes = getTodayEvents(events).filter((event) => event.type === "supply");
   if (!needed.length) return `${profile.name}'s daycare bag looks ready. Check water bottle in the morning.`;
   return `Pack ${needed.map((item) => item.name).join(", ")}. ${supplyNotes.map((event) => event.note).filter(Boolean).join(" ")} Morning reminder: check recurring items before leaving.`;
+}
+
+export function generateDaycareDecisionSupport(profile: ChildProfile, events: CareEvent[]) {
+  const recent = getLast7DaysEvents(events);
+  const daycareDistress = recent.filter((event) => event.note?.match(/daycare|caregiver|teacher/i) && event.note?.match(/cry|refus|not eat|upset|distress|rough/i));
+  const concerning = recent.some((event) => event.note?.match(/injury|bruise|unsafe|neglect|left alone|blood|dehydrat|letharg|breathing|severe pain/i));
+
+  if (concerning) {
+    return `Trust your gut. If daycare feels unsafe or ${profile.name} has concerning symptoms or unexplained injuries, pause and contact the daycare director, your pediatrician, or urgent care depending on severity. Ask for exactly what happened today, when she ate, how long she cried, and who was with her.`;
+  }
+
+  if (daycareDistress.length >= 2) {
+    return `I would not decide from panic alone, but this is enough to take seriously. Ask daycare for a clear timeline tomorrow: crying length, food offered, naps, diaper, and what helped. If this keeps repeating or they cannot explain it clearly, consider a short break or backup care while you investigate.`;
+  }
+
+  return `One rough daycare day does not automatically mean you should stop sending her. For tomorrow, ask the teachers what changed, how long she cried, whether she ate anything, and what helped. If she is still very distressed after pickup, refusing fluids, feverish, unusually sleepy, or daycare cannot give clear answers, keep her home and check with your pediatrician.`;
 }
 
 export function generateDoctorSummary(profile: ChildProfile, events: CareEvent[]) {
@@ -188,6 +204,7 @@ export function detectMemoryCandidates(profile: ChildProfile, events: CareEvent[
 export function classifyAskTinyIntent(text: string) {
   const lower = text.toLowerCase();
   if (lower.includes("bedtime")) return "bedtime";
+  if ((lower.includes("daycare") || lower.includes("day care")) && lower.match(/keep sending|send her|send him|stop|pull|safe|okay|ok|should i|there/i)) return "daycare_decision";
   if (lower.includes("daycare") || lower.includes("pack")) return "daycare";
   if (lower.includes("poop") || lower.includes("constipation")) return "constipation";
   if (lower.includes("doctor") || lower.includes("pediatrician")) return "doctor";
@@ -259,16 +276,18 @@ export function parseNaturalCareEntry(text: string, childId: string) {
       events.push({ ...makeParsedEvent(childId, "meal", chunk, timestamp), status });
     }
     if (lower.match(/\b(poop|stool|bm)\b/)) {
-      const status = lower.match(/hard|constipat/) ? "hard" : lower.includes("watery") ? "watery" : lower.includes("soft") ? "soft" : lower.includes("normal") ? "normal" : undefined;
+      const status = lower.match(/hard|constipat/) ? "hard" : lower.match(/watery|wet|loose|runny/) ? "watery" : lower.includes("soft") ? "soft" : lower.includes("normal") ? "normal" : undefined;
       events.push({ ...makeParsedEvent(childId, "poop", chunk, timestamp), status });
     }
+    if (lower.match(/\b(diaper|nappy)\b/) && lower.match(/\b(changed|change|just changed|new)\b/)) events.push(makeParsedEvent(childId, "diaper", chunk, timestamp));
+    if (lower.match(/\b(crying|cried|upset|unsettled)\b/)) events.push({ ...makeParsedEvent(childId, "mood", chunk, timestamp), mood: "fussy", status: "fussy" });
     if (lower.match(/\b(happy|tired|clingy|fussy|sick|energetic)\b/)) {
       const mood = (["happy", "tired", "clingy", "fussy", "sick", "energetic"] as const).find((item) => lower.includes(item));
       events.push({ ...makeParsedEvent(childId, "mood", chunk, timestamp), mood, status: mood });
     }
     if (lower.match(/\b(medicine|meds|tylenol|motrin|dose)\b/)) events.push(makeParsedEvent(childId, "medicine", chunk, timestamp));
     if (lower.match(/\b(wipes|diapers|clothes|bottle|blanket|sunscreen|hat|shoes|bib).*\b(need|needed|low|pack|bring)\b/)) events.push({ ...makeParsedEvent(childId, "supply", chunk, timestamp), status: "needed" });
-    if (lower.match(/\b(bedtime|bed|asleep|sleep)\b/) && !lower.includes("nap")) events.push(makeParsedEvent(childId, "bedtime", chunk, timestamp));
+    if (lower.match(/\b(bedtime|bed|asleep|sleep|settled)\b/) && !lower.includes("nap")) events.push(makeParsedEvent(childId, "bedtime", chunk, timestamp));
     if (lower.match(/\b(fever|vomit|blood|rash|cough|pain|dehydrat|breathing)\b/)) events.push(makeParsedEvent(childId, "symptom", chunk, timestamp));
   });
 

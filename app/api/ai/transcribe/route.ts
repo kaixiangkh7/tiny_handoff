@@ -21,6 +21,9 @@ export async function POST(request: NextRequest) {
     const transcription = await client.audio.transcriptions.create({
       file,
       model,
+      language: "en",
+      prompt:
+        "English parent voice note about toddler childcare. Names may include Emma and Tiny. Common words: diaper, poop, pee, milk, water, nap, bedtime, crying, fussy, rash, fever, daycare, wipes.",
     });
 
     return NextResponse.json({ text: transcription.text, source: "openai-transcribe" });
