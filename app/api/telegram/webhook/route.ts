@@ -28,6 +28,7 @@ type TelegramUpdate = {
 const botToken = () => process.env.TELEGRAM_BOT_TOKEN;
 const dashboardUrl = () => process.env.TINY_DASHBOARD_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://127.0.0.1:3000";
 const botUsername = () => process.env.TELEGRAM_BOT_USERNAME?.replace(/^@/, "").toLowerCase();
+const openaiModel = () => process.env.OPENAI_MODEL ?? "gpt-5.5";
 
 function allowedUserIds() {
   return new Set(
@@ -143,7 +144,7 @@ async function runTinyAgent(request: NextRequest, message: TelegramMessage, text
   return response.json();
 }
 
-async function persistTelegramTurn(message: TelegramMessage, text: string, agent: any) {
+async function persistTelegramTurn(message: TelegramMessage, text: string, agent: any, assistantText?: string) {
   const childId = process.env.TELEGRAM_DEFAULT_CHILD_ID ?? "emma";
   const sender = message.from?.username ?? message.from?.first_name ?? String(message.from?.id ?? message.chat.id);
   const createdAt = message.date ? new Date(message.date * 1000).toISOString() : new Date().toISOString();
@@ -162,7 +163,7 @@ async function persistTelegramTurn(message: TelegramMessage, text: string, agent
     childId,
     source: "telegram",
     role: "assistant",
-    text: agent.message ?? "Got it.",
+    text: assistantText ?? agent.message ?? "I’ll remember that.",
     externalChatId: String(message.chat.id),
     createdAt: new Date().toISOString(),
   };
@@ -176,6 +177,162 @@ async function persistTelegramTurn(message: TelegramMessage, text: string, agent
     }
   }
   await appendConversation(assistantMessage);
+}
+
+function cleanReceiptLanguage(message: string) {
+  return message
+    .replace(/^got it[.!—\-\s]*/i, "")
+    .replace(/^i(?:'|’)ll note that\s*/i, "I’ll remember that ")
+    .replace(/^i logged that\s*/i, "I’ll remember that ")
+    .replace(/^i noted that\s*/i, "I’ll remember that ")
+    .trim();
+}
+
+function includesAny(value: string, words: string[]) {
+  const lower = value.toLowerCase();
+  return words.some((word) => lower.includes(word));
+}
+
+function describeSavedEvent(event: CareEvent) {
+  if (event.type === "poop") {
+    const status = event.status ? ` ${event.status}` : "";
+    return `poop${status}`.trim();
+  }
+  if (event.type === "water") return "water";
+  if (event.type === "mood") return event.mood ?? event.status ?? "mood";
+  if (event.type === "symptom") return event.status ?? "symptoms";
+  if (event.type === "bedtime") return event.status === "asleep" ? "sleep" : "bedtime";
+  return event.type.replaceAll("_", " ");
+}
+
+function recentThreadText(conversations: TinyConversationMessage[]) {
+  return conversations
+    .filter((message) => message.source === "telegram")
+    .slice(-8)
+    .map((message) => message.text)
+    .join(" ")
+    .toLowerCase();
+}
+
+function recentThreadForReply(conversations: TinyConversationMessage[]) {
+  return conversations
+    .filter((message) => message.source === "telegram")
+    .slice(-10)
+    .map((message) => ({
+      role: message.role,
+      text: message.text,
+      at: message.createdAt,
+    }));
+}
+
+function buildFriendlyLogReply(text: string, events: CareEvent[], fallback: string, recentContext = "") {
+  const lower = text.toLowerCase();
+  const context = `${recentContext} ${lower}`;
+  const eventTypes = new Set(events.map((event) => event.type));
+  const eventWords = events.map(describeSavedEvent).filter(Boolean);
+  const hasSickContext = includesAny(context, ["sick", "runny", "cold", "nose", "cried", "cry", "fever", "cough"]);
+
+  if (includesAny(lower, ["don't have a humidifier", "dont have a humidifier", "no humidifier", "do not have a humidifier"])) {
+    return "Totally okay. Emma does not need perfect gear tonight. If you do not have a humidifier, you can skip it. If her nose is really bothering her, try saline drops or spray, gentle suction, holding her a bit upright while she settles, or sitting with her in a steamy bathroom for a few minutes. The main thing is comfort and watching her breathing.";
+  }
+
+  if (includesAny(lower, ["don't have", "dont have", "do not have", "no "]) && hasSickContext) {
+    return "That is okay. Work with what you have tonight. For a runny nose, the basics still help: keep her comfortable, offer small sips if she wakes, use saline if you have it, and watch that her breathing stays easy.";
+  }
+
+  if (eventTypes.has("poop")) {
+    const poop = events.find((event) => event.type === "poop");
+    const status = poop?.status ? ` ${poop.status}` : "";
+    return `Ah, that helps. Half hard and half soft sounds like things may be moving, even if her belly is not totally back to easy yet. I would keep fluids gentle when she is awake and just watch whether the next poop keeps softening.`;
+  }
+
+  if (eventTypes.has("water")) {
+    return hasSickContext || includesAny(lower, ["not much", "didn't drink", "did not drink"])
+      ? "That fits with the night you are having. I would not wake her just for water, but if she stirs or wakes up, offer a few small sips. With the harder poop earlier, little chances for fluids tomorrow matter more than forcing anything tonight."
+      : "Good to know. If she is happy and awake later, a few sips are enough; no need to turn it into a big task.";
+  }
+
+  if (eventTypes.has("symptom") || eventTypes.has("mood")) {
+    return hasSickContext
+      ? "Poor little Emma. If she is asleep and breathing comfortably, this still sounds like a watch-and-comfort night. You do not need to keep doing things just to do something; quiet checks are enough unless something changes."
+      : `That gives the next caregiver a little more context. ${eventWords.length ? `The useful bit is ${eventWords.join(", ")}.` : ""}`.trim();
+  }
+
+  if (eventTypes.has("bedtime")) {
+    return "Aww, I am glad she got to sleep. Since she is already down, the best next move is probably doing less: keep it quiet, check gently, and let her rest if her breathing looks comfortable.";
+  }
+
+  const cleaned = cleanReceiptLanguage(fallback);
+  if (cleaned && !/^got it/i.test(cleaned)) return cleaned;
+  return hasSickContext
+    ? "That makes sense in the bigger picture tonight. Keep the plan simple: comfort, fluids if she wakes, and watching for anything that feels truly off."
+    : eventWords.length
+      ? `That helps round out the picture: ${eventWords.join(", ")}.`
+      : "That makes sense. I’m with you.";
+}
+
+function fallbackTelegramReply(text: string, agent: any, recentConversations: TinyConversationMessage[]) {
+  const events = Array.isArray(agent.events) ? (agent.events as CareEvent[]) : [];
+  const context = recentThreadText(recentConversations);
+
+  if (agent.mode === "clarify") {
+    return cleanReceiptLanguage(agent.message ?? "Can you tell me one more detail?");
+  }
+
+  if (agent.mode === "ask") {
+    return cleanReceiptLanguage(agent.message ?? "Let me think that through with Emma’s recent notes.");
+  }
+
+  return buildFriendlyLogReply(text, events, agent.message ?? "", context);
+}
+
+async function buildTelegramReply(text: string, agent: any, recentConversations: TinyConversationMessage[]) {
+  const fallback = fallbackTelegramReply(text, agent, recentConversations);
+  if (!process.env.OPENAI_API_KEY) return fallback;
+
+  try {
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const response = await client.responses.create({
+      model: openaiModel(),
+      input: [
+        {
+          role: "system",
+          content:
+            "You are Tiny, a warm friend and practical guide for a parent caring for Emma. You are not a logging bot. The backend may save events silently, but your reply should not mention logging, saving, care updates, dashboards, or memory unless the parent asks. Respond to the emotional and practical situation in the most recent message, using the recent thread for context. If the newest message is a short continuation like 'again' or 'don't have a humidifier', infer what it refers to from the thread. Do not repeat the same answer twice. Be natural, specific, and proactive, like a thoughtful friend. Keep it concise: usually 1-2 short paragraphs. For medical topics, avoid diagnosis; give comfort steps and clear red flags when relevant. If one detail is genuinely needed before you can help safely, ask one gentle clarifying question.",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            newestMessage: text,
+            agentMode: agent.mode,
+            extractedEvents: Array.isArray(agent.events)
+              ? agent.events.map((event: CareEvent) => ({
+                  type: event.type,
+                  status: event.status,
+                  mood: event.mood,
+                  note: event.note,
+                  timestamp: event.timestamp,
+                }))
+              : [],
+            agentDraft: agent.message ?? "",
+            fallbackDraft: fallback,
+            recentThread: recentThreadForReply(recentConversations),
+          }),
+        },
+      ],
+    } as any);
+
+    const reply = response.output_text?.trim();
+    if (!reply) return fallback;
+    return reply
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/dashboard:\s*https?:\/\/\S+/gi, "")
+      .replace(/saved quietly here:\s*https?:\/\/\S+/gi, "")
+      .trim();
+  } catch (error) {
+    console.error("Telegram reply composer failed", error);
+    return fallback;
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -222,14 +379,11 @@ export async function POST(request: NextRequest) {
     }
 
     const agent = await runTinyAgent(request, message, text);
-    await persistTelegramTurn(message, text, agent);
     const eventsCount = Array.isArray(agent.events) ? agent.events.length : 0;
-    const link = `${dashboardUrl()}/`;
-    const storageNote = eventsCount
-      ? `\n\nI understood ${eventsCount} care update${eventsCount === 1 ? "" : "s"}. Dashboard: ${link}`
-      : `\n\nDashboard: ${link}`;
-
-    await sendTelegramMessage(chatId, `${agent.message ?? "Got it."}${storageNote}`);
+    const stateForReply = await getTinyState();
+    const replyText = await buildTelegramReply(text, agent, stateForReply.conversations);
+    await persistTelegramTurn(message, text, agent, replyText);
+    await sendTelegramMessage(chatId, replyText);
     return NextResponse.json({ ok: true, mode: agent.mode, eventsCount });
   } catch (error) {
     console.error("Telegram webhook failed", error);

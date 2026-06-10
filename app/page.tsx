@@ -144,7 +144,7 @@ export default function Home() {
 
   const refresh = async () => {
     try {
-      const response = await fetch("/api/state");
+      const response = await fetch(`/api/state?ts=${Date.now()}`, { cache: "no-store" });
       if (!response.ok) throw new Error("State fetch failed");
       applyState((await response.json()) as TinyState);
     } catch {
@@ -158,6 +158,17 @@ export default function Home() {
 
   useEffect(() => {
     void refresh();
+    const interval = window.setInterval(() => void refresh(), 2000);
+    const refreshWhenVisible = () => {
+      if (!document.hidden) void refresh();
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, []);
 
   const saveLog = async (event: CareEvent) => {
@@ -300,6 +311,7 @@ export default function Home() {
           profile={profile}
           events={events}
           memories={memories}
+          conversations={conversations}
           supplies={supplies}
           bedtime={bedtime}
           latestCareMoment={latestCareMoment}
@@ -333,6 +345,7 @@ export default function Home() {
             onCareMoment={setLatestCareMoment}
             onConversation={rememberConversation}
             onClearConversation={clearConversation}
+            onState={applyState}
             expanded
           />
         </CaptureSheet>
@@ -425,7 +438,7 @@ function NavTab({ item, active, onClick }: { item: { id: Tab; label: string; ico
   );
 }
 
-function TodayDashboard({ profile, events, memories, supplies, bedtime, latestCareMoment, onProfileChange, onViewDetails }: any) {
+function TodayDashboard({ profile, events, memories, conversations, supplies, bedtime, latestCareMoment, onProfileChange, onViewDetails }: any) {
   return (
     <section className="space-y-4">
       <header className="rounded-[30px] bg-white/[0.06] p-4 shadow-soft ring-1 ring-white/10">
@@ -444,7 +457,8 @@ function TodayDashboard({ profile, events, memories, supplies, bedtime, latestCa
         </div>
       </header>
       {latestCareMoment && <CareMomentCard moment={latestCareMoment} />}
-      <NextStepsPanel profile={profile} events={events} supplies={supplies} bedtime={bedtime} />
+      <LatestTelegramCard conversations={conversations} />
+      <NextStepsPanel profile={profile} events={events} supplies={supplies} bedtime={bedtime} memories={memories} conversations={conversations} />
       <AlertsOnly events={events} supplies={supplies} />
       <button onClick={onViewDetails} className="flex w-full items-center justify-center gap-2 rounded-full bg-white/[0.06] px-4 py-3 text-sm font-bold text-zinc-300 ring-1 ring-white/10">
         <List className="h-4 w-4" />
@@ -529,6 +543,83 @@ function ChildPhoto({ profile, onChange }: { profile: any; onChange: (profile: a
   );
 }
 
+function latestConversationPair(conversations: TinyConversationMessage[]) {
+  const telegram = conversations
+    .filter((message) => message.source === "telegram")
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const latestUserIndex = telegram.map((message) => message.role).lastIndexOf("user");
+  if (latestUserIndex === -1) return null;
+  const user = telegram[latestUserIndex];
+  const assistant = telegram.slice(latestUserIndex + 1).find((message) => message.role === "assistant");
+  return { user, assistant };
+}
+
+function LatestTelegramCard({ conversations }: { conversations: TinyConversationMessage[] }) {
+  const latest = latestConversationPair(conversations);
+  if (!latest) return null;
+
+  const reply = latest.assistant?.text ? cleanTinyReply(latest.assistant.text) : "Tiny is still working through this update.";
+  const friendRead = reply || buildFriendRead(latest.user.text, reply);
+  const userTime = formatTime(latest.user.createdAt);
+
+  return (
+    <section className="rounded-[26px] bg-[#171114] p-4 shadow-soft ring-1 ring-[#ff6fb1]/25">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <IconBubble icon={Sparkles} tone="pink" />
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.1em] text-[#ff9bc9]">Latest from Telegram</p>
+            <h2 className="text-xl font-bold tracking-tight text-white">Tiny's take</h2>
+          </div>
+        </div>
+        <span className="shrink-0 rounded-full bg-white/10 px-3 py-1 text-xs font-bold text-zinc-300">{userTime}</span>
+      </div>
+      <div className="rounded-[20px] bg-white/[0.06] p-3">
+        <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-sage">A friendlier read</p>
+        <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-zinc-100">{friendRead}</p>
+      </div>
+    </section>
+  );
+}
+
+function buildFriendRead(userText: string, assistantText: string) {
+  const text = `${userText} ${assistantText}`.toLowerCase();
+  const childName = /\bemma\b/i.test(userText) || /\bemma\b/i.test(assistantText) ? "Emma" : "the little one";
+  const isSick = /cold|runny|nose|sick|fever|cough|congest|stuffed|symptom/.test(text);
+  const isConcerned = /concern|worried|scared|anxious|nervous/.test(text);
+  const isSleeping = /asleep|sleep|bedtime|nap/.test(text);
+  const seemsOk = /ok|okay|fine|comfortable|breathing comfortably|seemed okay/.test(text);
+
+  if (isSick && seemsOk) {
+    return [
+      `Poor little ${childName}. Sick evenings are just hard, especially when there is a runny nose, crying, and you are trying to decide if everything is okay.`,
+      `From what you wrote, this sounds like a normal cold-ish night so far, not a panic moment. If she is sleeping and breathing comfortably, I would let her rest, keep checking in quietly, offer fluids when she wakes, and use saline or gentle suction if her nose is really bothering her.`,
+      "The only stuff I would treat as urgent is hard breathing, blue lips, being unusually hard to wake, dehydration signs, a fever that is high or not letting up, or that strong gut feeling that something is not right.",
+    ].join("\n\n");
+  }
+
+  if (isSick) {
+    return [
+      `Poor little ${childName}. A cold and runny nose are super common at this age, but it still feels awful when she is fussy and uncomfortable.`,
+      "I would keep tonight really simple: comfort, rest, fluids when she is awake, and saline or gentle suction if the stuffy nose is making her mad.",
+      "The things I would not brush off are hard breathing, blue lips, unusual sleepiness, dehydration signs, or a high fever that is not easing.",
+    ].join("\n\n");
+  }
+
+  if (isConcerned) {
+    return [
+      "I get why this is sitting in your head. When they seem okay but not quite themselves, it is hard to fully relax.",
+      `${childName} sounds okay from what you wrote, so I would not make the night bigger than it needs to be. Stay close, keep an eye on her, and if your gut keeps poking you, it is completely fair to call and ask.`,
+    ].join("\n\n");
+  }
+
+  if (isSleeping) {
+    return `${childName} getting sleep is a good little win. I would keep the next stretch calm and quiet, then use how she wakes up to decide whether she needs comfort, food, or just more rest.`;
+  }
+
+  return "Tiny has the update. Nothing here needs to feel dramatic; the useful part is just remembering what happened so the next person caring for her has the full picture.";
+}
+
 type NextStep = {
   title: string;
   detail: string;
@@ -559,6 +650,45 @@ function isNightContext(events: CareEvent[], profile: ChildProfile) {
   return Boolean(bedtimeLog || sleepNote || nearOrAfterBedtime || hour >= 18 || hour < 5);
 }
 
+function minutesFromClock(time: string) {
+  const [hours, minutes] = time.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function latestEvent(events: CareEvent[]) {
+  return [...events].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+}
+
+function hasEventAfter(events: CareEvent[], type: EventType, timestamp: string) {
+  const cutoff = new Date(timestamp).getTime();
+  return events.some((event) => event.type === type && new Date(event.timestamp).getTime() > cutoff);
+}
+
+function isLikelyAsleep(events: CareEvent[], profile: any) {
+  const bedtimeLog = getLastEventByType(events, "bedtime");
+  const latest = latestEvent(events);
+  if (!bedtimeLog) return false;
+
+  const bedtimeAt = new Date(bedtimeLog.timestamp);
+  const hoursAfterBedtime = (Date.now() - bedtimeAt.getTime()) / 36e5;
+  const wokeAfterBedtime = hasEventAfter(events, "wake", bedtimeLog.timestamp);
+  const napEndedAfterBedtime = hasEventAfter(events, "nap_end", bedtimeLog.timestamp);
+  const latestIsNightContext = !latest || ["bedtime", "symptom", "mood", "note", "medicine"].includes(latest.type);
+  const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+  const usualWakeMinutes = minutesFromClock(profile.usualWakeTime ?? "06:30");
+  const beforeMorningWake = nowMinutes < usualWakeMinutes + 45;
+
+  return !wokeAfterBedtime && !napEndedAfterBedtime && hoursAfterBedtime >= 0 && hoursAfterBedtime <= 14 && latestIsNightContext && !beforeMorningWake;
+}
+
+function isQuietNight(profile: any) {
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const bedtimeMinutes = minutesFromClock(profile.usualBedtime ?? "19:30");
+  const wakeMinutes = minutesFromClock(profile.usualWakeTime ?? "06:30");
+  return nowMinutes >= bedtimeMinutes - 20 || nowMinutes < wakeMinutes + 45;
+}
+
 function buildNextSteps(profile: ChildProfile, events: CareEvent[], supplies: SupplyItem[], bedtime: any): NextStep[] {
   const today = getTodayEvents(events);
   const wake = getLastEventByType(today, "wake");
@@ -569,11 +699,41 @@ function buildNextSteps(profile: ChildProfile, events: CareEvent[], supplies: Su
   const water = getLastEventByType(today, "water");
   const poop = getLastEventByType(today, "poop");
   const bedtimeLog = getLastEventByType(today, "bedtime");
+  const symptom = getLastEventByType(today, "symptom");
+  const mood = getLastEventByType(today, "mood");
   const unpacked = supplies.filter((item) => item.needed && !item.packed);
   const steps: NextStep[] = [];
   const now = new Date();
   const napStartTime = timeToday(profile.usualNapStart);
-  const nightContext = isNightContext(events, profile);
+  const asleep = isLikelyAsleep(today, profile);
+  const quietNight = isQuietNight(profile);
+  const nightContext = isNightContext(events, profile) || quietNight;
+
+  if (asleep) {
+    steps.push({
+      title: symptom ? "Let her sleep" : "Keep the night quiet",
+      detail: symptom
+        ? "She is already asleep, so skip food or water unless she wakes. Do quiet checks for breathing, comfort, and fever if you are worried."
+        : "She is already down for the night. The next useful thing is just a quiet check-in, not another daytime care task.",
+      timing: "Now",
+      tone: "primary",
+    });
+
+    if (symptom || mood?.mood === "fussy" || mood?.status === "fussy") {
+      steps.push({
+        title: "Sick-night watch",
+        detail: "If she wakes, offer fluids and comfort. Call sooner for hard breathing, blue lips, dehydration signs, unusual sleepiness, or a high/persistent fever.",
+        timing: "If she wakes",
+        tone: "warn",
+      });
+    }
+
+    if (unpacked.length) {
+      steps.push({ title: "Morning bag note", detail: `Before leaving tomorrow, pack ${unpacked.map((item) => item.name).join(", ")}.`, timing: "Morning", tone: "normal" });
+    }
+
+    return steps.slice(0, 3);
+  }
 
   if (nightContext) {
     const settled = today.some((event) => event.note?.match(/fell back asleep|fall asleep|asleep right away|settled/i));
@@ -600,24 +760,28 @@ function buildNextSteps(profile: ChildProfile, events: CareEvent[], supplies: Su
     });
   } else if (!nightContext && !bedtimeLog) {
     steps.push({ title: "Bedtime window", detail: bedtime.reason, timing: bedtime.window, tone: "primary" });
+  } else if (quietNight) {
+    steps.push({ title: "Wind down", detail: "It is already bedtime territory, so keep the next step calm instead of adding food or tracking tasks.", timing: "Tonight", tone: "primary" });
   }
 
   const lastFoodHours = Math.min(hoursSince(meal?.timestamp), hoursSince(milk?.timestamp));
-  if (!meal && !milk) {
-    steps.push({ title: "First food note", detail: "Tiny has not heard about meal or milk yet today.", timing: "Next feeding", tone: "normal" });
+  if (quietNight) {
+    steps.push({ title: "Save food for waking", detail: "Since it is night, offer food or water only if she wakes and seems to need it.", timing: "If needed", tone: "normal" });
+  } else if (!meal && !milk) {
+    steps.push({ title: "First food log", detail: "No meal or milk has been logged today.", timing: "Next feeding", tone: "normal" });
   } else if (lastFoodHours >= 3) {
     steps.push({ title: "Meal or snack", detail: "It has been about 3+ hours since the last food or milk Tiny knows about.", timing: "Soon", tone: "normal" });
   } else {
     steps.push({ title: "Next meal check", detail: "Food timing looks okay from the latest logs.", timing: "Later", tone: "normal" });
   }
 
-  if (!water) {
-    steps.push({ title: "Offer water", detail: "Tiny has not heard about water today. Useful to track, especially if poop is hard or missing.", timing: "Next cup", tone: poop ? "normal" : "warn" });
+  if (!quietNight && !water) {
+    steps.push({ title: "Offer water", detail: "No water logged today. Useful to track, especially if poop is hard or missing.", timing: "Next cup", tone: poop ? "normal" : "warn" });
   }
 
-  if (!poop) {
-    steps.push({ title: "Poop watch", detail: "Tiny has not heard about poop today. Track status and discomfort if it happens.", timing: "Today", tone: "warn" });
-  } else if (poop.status === "hard") {
+  if (!quietNight && !poop) {
+    steps.push({ title: "Poop watch", detail: "No poop logged today. Track status and discomfort if it happens.", timing: "Today", tone: "warn" });
+  } else if (poop?.status === "hard") {
     steps.push({ title: "Hard poop noted", detail: "Keep tracking water and discomfort. This is not a diagnosis.", timing: "Continue", tone: "warn" });
   }
 
@@ -628,21 +792,92 @@ function buildNextSteps(profile: ChildProfile, events: CareEvent[], supplies: Su
   return steps.slice(0, nightContext ? 2 : 3);
 }
 
-function NextStepsPanel({ profile, events, supplies, bedtime }: { profile: any; events: CareEvent[]; supplies: SupplyItem[]; bedtime: any }) {
+function recommendationKey(events: CareEvent[], supplies: SupplyItem[], conversations: TinyConversationMessage[]) {
+  const latestEvents = [...events]
+    .sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? b.timestamp).getTime() - new Date(a.updatedAt ?? a.createdAt ?? a.timestamp).getTime())
+    .slice(0, 8)
+    .map((event) => `${event.id}:${event.updatedAt}:${event.type}:${event.status ?? ""}:${event.mood ?? ""}:${event.note ?? ""}`)
+    .join("|");
+  const latestConversation = conversations
+    .filter((message) => message.source === "telegram")
+    .slice(-6)
+    .map((message) => `${message.id}:${message.text}:${message.createdAt}`)
+    .join("|");
+  const supplyState = supplies.map((item) => `${item.id}:${item.needed}:${item.packed}:${item.note ?? ""}`).join("|");
+  return `${latestEvents}::${latestConversation}::${supplyState}`;
+}
+
+function NextStepsPanel({
+  profile,
+  events,
+  supplies,
+  bedtime,
+  memories,
+  conversations,
+}: {
+  profile: any;
+  events: CareEvent[];
+  supplies: SupplyItem[];
+  bedtime: any;
+  memories: ChildMemory[];
+  conversations: TinyConversationMessage[];
+}) {
   const steps = buildNextSteps(profile, events, supplies, bedtime);
-  const [primary, ...rest] = steps;
+  const fallbackStep = steps[0];
+  const [aiStep, setAiStep] = useState<NextStep | null>(null);
+  const [aiSource, setAiSource] = useState("");
+  const key = useMemo(() => recommendationKey(events, supplies, conversations), [events, supplies, conversations]);
+
+  useEffect(() => {
+    if (!fallbackStep) return;
+    let cancelled = false;
+    setAiStep(null);
+    setAiSource("");
+
+    const recentConversations = conversations.filter((message) => message.source === "telegram").slice(-10);
+    const latestEvents = [...events]
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .slice(0, 20);
+
+    void fetch(`/api/ai/recommendation?ts=${Date.now()}`, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nowIso: new Date().toISOString(),
+        profile,
+        todayEvents: getTodayEvents(events),
+        recentEvents: latestEvents,
+        supplies,
+        memories,
+        recentConversations,
+        fallbackStep,
+      }),
+    })
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error("Recommendation failed"))))
+      .then((data) => {
+        if (!cancelled && data.recommendation?.title && data.recommendation?.detail) {
+          setAiStep(data.recommendation as NextStep);
+          setAiSource(data.source ?? "");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAiStep(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [key]);
+
+  const primary = aiStep ?? fallbackStep;
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold tracking-tight text-white">Recommendation</h2>
-        <span className="text-xs font-bold uppercase tracking-[0.1em] text-zinc-500">Based on logs</span>
+        <span className="text-xs font-bold uppercase tracking-[0.1em] text-zinc-500">{aiSource === "openai" ? "Next action" : "Based on logs"}</span>
       </div>
       {primary && <NextStepCard step={primary} featured />}
-      {rest.length > 0 && <div className="grid gap-2">
-        {rest.map((step) => (
-          <NextStepCard key={`${step.title}-${step.timing}`} step={step} />
-        ))}
-      </div>}
     </section>
   );
 }
@@ -661,12 +896,12 @@ function NextStepCard({ step, featured = false }: { step: NextStep; featured?: b
         <div className="flex min-w-0 gap-3">
           <IconBubble icon={StepIcon} tone={step.tone === "warn" ? "warn" : featured ? "pink" : "neutral"} />
           <div>
-          <p className="text-[11px] font-bold uppercase tracking-[0.1em] text-zinc-500">{step.timing}</p>
-          <h3 className={`${featured ? "text-2xl" : "text-lg"} mt-1 font-bold leading-tight text-white`}>{step.title}</h3>
-          <p className="mt-1 text-sm leading-relaxed text-zinc-300">{step.detail}</p>
+          <p className="text-[11px] font-bold uppercase tracking-[0.1em] text-zinc-500">{featured ? `Action - ${step.timing}` : step.timing}</p>
+          <h3 className={`${featured ? "text-xl" : "text-lg"} mt-1 font-bold leading-tight text-white`}>{step.title}</h3>
+          <p className="mt-2 text-sm leading-relaxed text-zinc-300">{step.detail}</p>
           </div>
         </div>
-        {featured && <span className="rounded-full bg-sage px-3 py-1 text-xs font-bold text-black">Next</span>}
+        {featured && <span className="rounded-full bg-sage px-3 py-1 text-xs font-bold text-black">Do</span>}
       </div>
     </article>
   );
@@ -805,6 +1040,7 @@ function AgentComposer({
   onCareMoment,
   onConversation,
   onClearConversation,
+  onState,
   expanded = false,
 }: {
   profile: any;
@@ -816,6 +1052,7 @@ function AgentComposer({
   onCareMoment?: (moment: CareMoment) => void;
   onConversation?: (message: TinyConversationMessage) => void | Promise<void>;
   onClearConversation?: () => void | Promise<void>;
+  onState?: (state: TinyState) => void;
   expanded?: boolean;
 }) {
   const [text, setText] = useState("");
@@ -914,9 +1151,8 @@ function AgentComposer({
     if (!value.trim()) return [];
     const userText = value.trim();
     setLoading(true);
-    await rememberTurn("user", userText);
     try {
-      const response = await fetch("/api/ai/agent", {
+      const response = await fetch("/api/ai/web-turn", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -933,14 +1169,12 @@ function AgentComposer({
         }),
       });
       const data = await response.json();
-      const extractedEvents = Array.isArray(data.events) ? data.events : [];
-      const shouldSaveEvents = (data.mode === "log" || data.mode === "care_moment") && extractedEvents.length;
-      if (shouldSaveEvents) {
-        await onSave(extractedEvents);
+      if (!response.ok) throw new Error(data.error ?? "Web turn failed");
+      if (data.state && onState) {
+        onState(data.state as TinyState);
       }
-
-      const answer = await answerQuestion(userText);
-      const message = cleanTinyReply(answer.text);
+      const extractedEvents = Array.isArray(data.events) ? data.events : [];
+      const message = cleanTinyReply(data.message || "I'm here with you.");
 
       if (data.mode === "care_moment" || data.mode === "ask" || data.mode === "clarify") {
         onCareMoment?.({
@@ -952,8 +1186,7 @@ function AgentComposer({
         });
       }
 
-      setReply({ text: message, source: answer.source });
-      await rememberTurn("assistant", message);
+      setReply({ text: message, source: data.source });
       setText("");
       return extractedEvents;
     } catch {

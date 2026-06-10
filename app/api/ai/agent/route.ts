@@ -44,12 +44,49 @@ const agentSchema = {
   },
 };
 
-function localAgent(text: string, childId: string) {
+function hasRecentPoopConcern(payload: any) {
+  const recentEvents = Array.isArray(payload.recentEvents) ? payload.recentEvents : [];
+  const memories = Array.isArray(payload.memories) ? payload.memories : [];
+  return (
+    recentEvents.some(
+      (event: any) =>
+        event?.type === "poop" &&
+        (String(event.status ?? "").match(/hard|constipat/i) || String(event.note ?? "").match(/hard|constipat|cried|strain|pain/i)),
+    ) ||
+    memories.some(
+      (memory: any) =>
+        memory?.type === "poop_pattern" || String(memory?.statement ?? "").match(/hard poop|constipat|stool/i),
+    )
+  );
+}
+
+function needsPoopClarification(text: string, payload: any) {
+  const lower = text.toLowerCase();
+  const mentionsPoop = /\b(poop|pooped|stool|bm)\b/.test(lower);
+  if (!mentionsPoop || !hasRecentPoopConcern(payload)) return false;
+
+  const mentionsFrequencyOnly = /\b(twice|two times|2 times|once|one time|\d+\s*(x|times?)|a couple)\b/.test(lower);
+  const hasShape = /\b(hard|soft|normal|watery|loose|diarrhea|formed|pellet|pebble|mushy)\b/.test(lower);
+  const hasSpecificTime = /\b(\d{1,2})(?::\d{2})?\s*(am|pm)?\b|\b(morning|afternoon|evening|tonight|after|before|around)\b/.test(lower);
+
+  return mentionsFrequencyOnly && (!hasShape || !hasSpecificTime);
+}
+
+function localAgent(text: string, childId: string, payload: any = {}) {
   const lower = text.toLowerCase().trim();
   const soundsLikeQuestion = lower.includes("?") || /^(what|when|should|can|could|why|how|any|is|do|does)\b/.test(lower);
   const hasCareDetails = /\b(cry|cried|diaper|poop|stool|bm|wet|yellow|rash|fever|vomit|blood|milk|water|nap|meal|medicine|changed)\b/.test(lower);
   const serious = /\b(blood|breathing|blue|dehydrat|letharg|limp|repeated vomit|fever|severe pain)\b/.test(lower);
   const vagueLog = /^(milk|water|poop|nap|meal|medicine|mood|bedtime)$/i.test(lower);
+  if (needsPoopClarification(text, payload)) {
+    return {
+      mode: "clarify",
+      message:
+        "Ah, that poop detail is actually useful because of the constipation stuff from earlier. Do you remember roughly when the two poops happened, and were they hard, soft, normal, watery, or was she straining/crying?",
+      events: [],
+      askQuestion: "",
+    };
+  }
   if (vagueLog) {
     return {
       mode: "clarify",
@@ -101,7 +138,7 @@ export async function POST(request: NextRequest) {
     timestamp: payload.nowIso,
   };
 
-  const guarded = localAgent(text, childId);
+  const guarded = localAgent(text, childId, payload);
   if (guarded.mode === "clarify") {
     return NextResponse.json({ ...guarded, source: "clarification-rule" });
   }
@@ -118,7 +155,7 @@ export async function POST(request: NextRequest) {
         {
           role: "system",
           content:
-            "You are a structured childcare note extractor. This is an internal backend step, not the parent-facing chat. Classify the current inbound.messageText as log, ask, clarify, or care_moment. Use conversationContext only to resolve follow-ups and pronouns. Extract CareEvent objects only from inbound.messageText, never from todayEvents, recentEvents, memories, ruleAnswer, conversationContext, or any other context. If the current message has care facts plus a question or concern, set mode care_moment and extract clear events. If it is only care facts, set mode log and extract events. If it is only a question, set mode ask, put the cleaned context-aware question in askQuestion, and return an empty events array. Ask clarification only when missing detail is important for safety or meaning. Do not diagnose. Use safetyLevel only for routing. Preserve color, texture, crying, and caregiver details in notes. Use ISO timestamps; if no time is provided, use nowIso. Keep message empty unless mode is clarify.",
+            "You are Tiny's structured childcare note extractor. This is an internal backend step, not the parent-facing chat. Classify the current inbound.messageText as log, ask, clarify, or care_moment. Use conversationContext only to resolve follow-ups and pronouns. Extract CareEvent objects only from inbound.messageText, never from todayEvents, recentEvents, memories, ruleAnswer, conversationContext, or any other context. Parents may send messy text or voice notes with many things at once; extract every clear care detail and save partial information when safe rather than blocking. If the current message has care facts plus a question or concern, set mode care_moment and extract clear events. If it is only care facts, set mode log and extract events. If it is only a question, set mode ask, put the cleaned context-aware question in askQuestion, and return an empty events array. Ask clarification only when missing detail is important for safety, meaning, or action. If the parent mentions poop frequency but not time or stool quality, and recent events or memories mention constipation, hard poop, straining, crying, or poop concern, ask when it happened and what it looked like instead of logging a vague poop event. Do not diagnose. Use safetyLevel only for routing. Preserve color, texture, crying, and caregiver details in notes. Use ISO timestamps; if no time is provided, use nowIso. Keep message empty unless mode is clarify.",
         },
         { role: "user", content: JSON.stringify({ ...payload, inbound }) },
       ],
@@ -144,6 +181,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ...parsed, events, source: "openai-agent" });
   } catch (error) {
     console.error("AI agent failed", error);
-    return NextResponse.json({ ...localAgent(text, childId), source: "local-rules-fallback" });
+    return NextResponse.json({ ...localAgent(text, childId, payload), source: "local-rules-fallback" });
   }
 }
